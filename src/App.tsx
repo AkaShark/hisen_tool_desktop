@@ -8,6 +8,12 @@ const invokeCmd = async <T,>(cmd: string): Promise<T> => {
 
 type NetworkIface = { name: string; received: number; transmitted: number }
 
+type GpuInfo = {
+  name: string
+  vendor: string
+  vram: string | null
+}
+
 type SystemInfo = {
   os_name: string | null
   hostname: string | null
@@ -21,6 +27,7 @@ type SystemInfo = {
   used_swap: number
   uptime: number
   network_ifaces: NetworkIface[]
+  gpus: GpuInfo[]
 }
 
 type AudioDevices = {
@@ -97,6 +104,20 @@ export default function App() {
             <div><b>内存</b>: {Math.round(sys.used_memory/1024)} / {Math.round(sys.total_memory/1024)} MB</div>
             <div><b>Swap</b>: {Math.round(sys.used_swap/1024)} / {Math.round(sys.total_swap/1024)} MB</div>
             <div><b>运行时间</b>: {Math.floor(sys.uptime/3600)} 小时</div>
+          </div>
+        )}
+        {sys && sys.gpus && sys.gpus.length > 0 && (
+          <div className="gpu-section">
+            <h3>GPU</h3>
+            <ul>
+              {sys.gpus.map((gpu, i) => (
+                <li key={i}>
+                  <b>{gpu.name}</b>
+                  {gpu.vendor !== 'Unknown' && ` (${gpu.vendor})`}
+                  {gpu.vram && ` - ${gpu.vram}`}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </section>

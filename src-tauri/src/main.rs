@@ -19,6 +19,13 @@ struct CpuCore {
 }
 
 #[derive(Serialize)]
+struct GpuInfo {
+    name: String,
+    vendor: String,
+    vram: Option<String>,
+}
+
+#[derive(Serialize)]
 struct SystemInfo {
     os_name: Option<String>,
     hostname: Option<String>,
@@ -36,6 +43,7 @@ struct SystemInfo {
     used_swap: u64,
     uptime: u64,
     network_ifaces: Vec<NetworkIface>,
+    gpus: Vec<GpuInfo>,
 }
 
 #[tauri::command]
@@ -72,6 +80,9 @@ fn get_system_info() -> SystemInfo {
         })
         .collect();
 
+    // GPU 信息
+    let gpus = get_gpu_info();
+
     // 网络接口
     let networks = Networks::new_with_refreshed_list();
     let ifaces = networks
@@ -100,7 +111,190 @@ fn get_system_info() -> SystemInfo {
         used_swap: sys.used_swap(),
         uptime: System::uptime(),
         network_ifaces: ifaces,
+        gpus,
     }
+}
+
+// 获取 GPU 信息
+fn get_gpu_info() -> Vec<GpuInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        get_gpu_info_macos()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        get_gpu_info_windows()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        vec![]
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_gpu_info_macos() -> Vec<GpuInfo> {
+    use std::process::Command;
+    
+    let output = Command::new("system_profiler")
+        .args(["SPDisplaysDataType", "-json"])
+        .output();
+    
+    match output {
+        Ok(out) => {
+            if let Ok(json_str) = String::from_utf8(out.stdout) {
+                parse_macos_gpu_json(&json_str)
+            } else {
+                vec![]
+            }
+        }
+        Err(_) => vec![],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_gpu_json(json_str: &str) -> Vec<GpuInfo> {
+    // 简单解析 macOS GPU JSON
+    let mut gpus = vec![];
+    
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(displays) = json.get("SPDisplaysDataType").and_then(|v| v.as_array()) {
+            for display in displays {
+                let name = display.get("sppci_model")
+                    .or_else(|| display.get("_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown GPU")
+                    .to_string();
+                
+                let vendor = display.get("sppci_vendor")
+                    .or_else(|| display.get("spdisplays_vendor"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                
+                let vram = display.get("sppci_vram")
+                    .or_else(|| display.get("spdisplays_vram"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                
+                gpus.push(GpuInfo { name, vendor, vram });
+            }
+        }
+    }
+    
+    gpus
+}
+
+#[cfg(target_os = "windows")]
+fn get_gpu_info_windows() -> Vec<GpuInfo> {
+    use std::process::Command;
+    
+    // 使用 WMIC 获取 GPU 信息
+    let output = Command::new("wmic")
+        .args(["path", "win32_VideoController", "get", "Name,AdapterRAM,DriverVersion", "/format:csv"])
+        .output();
+    
+    match output {
+        Ok(out) => {
+            if let Ok(csv_str) = String::from_utf8(out.stdout) {
+                parse_windows_gpu_csv(&csv_str)
+            } else {
+                vec![]
+            }
+        }
+        Err(_) => {
+            // 备用方案：PowerShell
+            get_gpu_info_windows_powershell()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_gpu_csv(csv_str: &str) -> Vec<GpuInfo> {
+    let mut gpus = vec![];
+    
+    for line in csv_str.lines().skip(1) {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() >= 3 {
+            let adapter_ram = parts.get(1).unwrap_or(&"");
+            let name = parts.get(2).unwrap_or(&"Unknown").trim().to_string();
+            
+            if name.is_empty() || name == "Name" {
+                continue;
+            }
+            
+            let vram = if let Ok(bytes) = adapter_ram.parse::<u64>() {
+                if bytes > 0 {
+                    Some(format!("{} MB", bytes / 1024 / 1024))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            
+            gpus.push(GpuInfo {
+                name,
+                vendor: "Unknown".to_string(),
+                vram,
+            });
+        }
+    }
+    
+    gpus
+}
+
+#[cfg(target_os = "windows")]
+fn get_gpu_info_windows_powershell() -> Vec<GpuInfo> {
+    use std::process::Command;
+    
+    let output = Command::new("powershell")
+        .args(["-Command", "Get-WmiObject Win32_VideoController | Select-Object Name, AdapterRAM | ConvertTo-Json"])
+        .output();
+    
+    match output {
+        Ok(out) => {
+            if let Ok(json_str) = String::from_utf8(out.stdout) {
+                parse_windows_gpu_powershell(&json_str)
+            } else {
+                vec![]
+            }
+        }
+        Err(_) => vec![],
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn parse_windows_gpu_powershell(json_str: &str) -> Vec<GpuInfo> {
+    let mut gpus = vec![];
+    
+    // 可能是单个对象或数组
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+        let items = if json.is_array() {
+            json.as_array().map(|v| v.to_vec()).unwrap_or_default()
+        } else {
+            vec![json]
+        };
+        
+        for item in items {
+            let name = item.get("Name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown GPU")
+                .to_string();
+            
+            let vram = item.get("AdapterRAM")
+                .and_then(|v| v.as_u64())
+                .filter(|&v| v > 0)
+                .map(|v| format!("{} MB", v / 1024 / 1024));
+            
+            gpus.push(GpuInfo {
+                name,
+                vendor: "Unknown".to_string(),
+                vram,
+            });
+        }
+    }
+    
+    gpus
 }
 
 #[derive(Serialize)]

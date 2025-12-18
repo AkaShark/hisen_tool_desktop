@@ -11,3 +11,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .err{color:#b00020}
 table{width:100%;border-collapse:collapse}
 th,td{padding:6px 8px;border-bottom:1px solid #eee;text-align:left}
+.gpu-section{margin-top:16px;padding-top:12px;border-top:1px solid #eee}
+.gpu-section h3{margin:0 0 8px 0;font-size:14px;color:#333}
+.gpu-section ul{margin:0;padding-left:20px}
+.gpu-section li{margin:4px 0}
